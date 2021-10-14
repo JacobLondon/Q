@@ -1,9 +1,35 @@
+from typing import List
 from discord.ext import commands
-import discord
 import asyncio
+import discord
+import os
+import json
 #import signal
 
 everything = {}
+
+try:
+    with open("../qdata/qpath.json", "r") as fp:
+        qpath = json.load(fp)
+except:
+    qpath = {"shortcuts":{}}
+
+def get_songs(path) -> List[str]:
+    target = qpath['shortcuts'].get(path)
+    if target is None:
+        target = path
+
+    if not os.path.exists(target):
+        return []
+
+    if os.path.isdir(target):
+        songs = os.listdir(target)
+        songs = map(lambda song: f"{target}/{song}", songs)
+    else:
+        songs = [target]
+
+    songs = [mp3 for mp3 in songs if mp3.endswith('.mp3')]
+    return songs
 
 class Instance:
     def __init__(self, context):
@@ -15,6 +41,7 @@ class Instance:
 
         self._queue = [] # list of all queued music
         self.source = None
+        self.do_skip = False
 
         if self.id in everything.keys():
             self._has_joined = False
@@ -28,8 +55,11 @@ class Instance:
     def save_voice_client(self, voice_client):
         self.voice_client = voice_client
 
-    def queue(self, path: str):
-        self._queue.append(path)
+    def queue(self, path: List[str]):
+        if isinstance(path, str):
+            self._queue.append(path)
+        elif isinstance(path, list):
+            self._queue.extend(path)
 
 def fetch_instance(context):
     myid = context.guild.id
@@ -53,7 +83,8 @@ async def qq(context):
     split = text.split()
     path = split[2:]
     joined = ' '.join(path)
-    myinstance.queue(joined)
+    songs = get_songs(joined)
+    myinstance.queue(songs)
 
 @bot.command(
     name='list',
@@ -91,19 +122,26 @@ async def qplay(context):
         return
     if myinstance.voice_client and myinstance.voice_client.is_playing():
         return
-    if len(myinstance._queue) == 0:
-        return
 
-    path = myinstance._queue.pop(0)
-    try:
-        myinstance.source = discord.FFmpegPCMAudio(path)
-    except:
-        await context.message.channel.send(f"Can't find {path}")
-        return
-    myinstance.voice_client.play(myinstance.source)
-    while myinstance.voice_client.is_playing():
-        await asyncio.sleep(1)
-    myinstance.voice_client.stop()
+    while True:
+        myinstance.do_skip = False
+        if len(myinstance._queue) == 0:
+            return
+
+        path = myinstance._queue.pop(0)
+        try:
+            myinstance.source = discord.FFmpegPCMAudio(path)
+        except:
+            await context.message.channel.send(f"Can't find {path}")
+            return
+
+        await context.message.channel.send(f"Hey, coming up next we got {path}")
+        myinstance.voice_client.play(myinstance.source)
+        while myinstance.voice_client.is_playing():
+            await asyncio.sleep(0.25)
+            if myinstance.do_skip:
+                break
+        myinstance.voice_client.stop()
 
 @bot.command(
     name='stop',
@@ -116,6 +154,27 @@ async def qstop(context):
     if myinstance.voice_client and not myinstance.voice_client.is_playing():
         return
     myinstance.voice_client.stop()
+
+@bot.command(
+    name='skip',
+    description='Skips',
+    pass_context=True,
+)
+async def qskip(context):
+    if (myinstance := fetch_instance(context)) is None:
+        return
+    myinstance.do_skip = True
+
+@bot.command(
+    name='clear',
+    description='Clears',
+    pass_context=True,
+)
+async def qclear(context):
+    if (myinstance := fetch_instance(context)) is None:
+        return
+    await qstop(context)
+    myinstance._queue = []
 
 @bot.command(
     name='join',
